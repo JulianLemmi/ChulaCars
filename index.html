@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#060C1A" />
+    <meta name="description" content="ChulaCars — Plataforma inteligente de análisis automotriz para Argentina" />
+    <title>ChulaCars</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <style>
+      * { box-sizing: border-box; }
+      html, body, #root {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overscroll-behavior: none;
+      }
+      body {
+        background: #060C1A;
+        color: #F1F5F9;
+        font-family: 'Inter', system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      ::-webkit-scrollbar { width: 4px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: rgba(59, 130, 246, 0.3); border-radius: 2px; }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(59, 130, 246, 0.5); }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

@@ -1,0 +1,143 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  .glass {
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .glass-dark {
+    background: rgba(6, 12, 26, 0.85);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .card-base {
+    background: #0A1225;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 16px;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .card-hover:hover {
+    background: #0F1A35;
+    border-color: rgba(59, 130, 246, 0.25);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(59, 130, 246, 0.15);
+    transform: translateY(-2px);
+  }
+
+  .shimmer-bg {
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.04) 50%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2s linear infinite;
+  }
+
+  .text-gradient {
+    background: linear-gradient(135deg, #60A5FA 0%, #3B82F6 50%, #818CF8 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .text-gradient-gold {
+    background: linear-gradient(135deg, #FCD34D 0%, #F59E0B 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .bg-mesh {
+    background-image:
+      radial-gradient(ellipse at 20% 50%, rgba(59, 130, 246, 0.08) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% 20%, rgba(99, 102, 241, 0.06) 0%, transparent 50%),
+      radial-gradient(ellipse at 50% 100%, rgba(16, 185, 129, 0.04) 0%, transparent 50%);
+  }
+
+  .active-tab-indicator {
+    position: relative;
+  }
+  .active-tab-indicator::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 20px;
+    height: 2px;
+    background: #3B82F6;
+    border-radius: 1px;
+  }
+
+  .score-ring {
+    transform: rotate(-90deg);
+    transform-origin: center;
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(100%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-fade-in { animation: fadeIn 0.4s ease forwards; }
+.animate-slide-up { animation: slideUp 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; }
+.animate-scale-in { animation: scaleIn 0.3s ease forwards; }
+
+/* Custom recharts styles */
+.recharts-tooltip-wrapper {
+  outline: none !important;
+}
+.recharts-default-tooltip {
+  background: #0F1A35 !important;
+  border: 1px solid rgba(59, 130, 246, 0.2) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4) !important;
+}
+.recharts-tooltip-label {
+  color: #94A3B8 !important;
+  font-size: 12px !important;
+}
+.recharts-tooltip-item {
+  color: #F1F5F9 !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+}
