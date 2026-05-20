@@ -290,9 +290,12 @@ const CATALOG_API = {
 
       // ── Textos automáticos ─────────────────────────────────────────────────
       const marketSrc = item.marketSource === 'ml' ? 'MercadoLibre' : 'catálogo';
-      const aiSummary = netProfit > 0
-        ? `Publicación de ${item.platform}. ${margin > 0 ? `~${margin.toFixed(1)}% por debajo del mercado (fuente: ${marketSrc}).` : 'Precio competitivo.'} Ganancia neta estimada: ${fmt.usd(netProfit)} tras costos (gestión, detailing, reparaciones). ${km > 0 ? fmt.km(km) + ' · ' : ''}${year}.`
-        : `Publicación de ${item.platform}. Precio igual o por encima del mercado (${marketSrc}). ${km > 0 ? fmt.km(km) + ' · ' : ''}${year}. Verificar en persona.`;
+      const kmLabel = item.kmEstimated && km > 0 ? `~${fmt.km(km)} (est.)` : km > 0 ? fmt.km(km) : '';
+      const aiSummary = netProfit > 0 && !item.marginSuspect
+        ? `Publicación de ${item.platform}. ${margin > 0 ? `~${margin.toFixed(1)}% por debajo del mercado (fuente: ${marketSrc}).` : 'Precio competitivo.'} Ganancia neta estimada: ${fmt.usd(netProfit)} tras costos. ${kmLabel ? kmLabel + ' · ' : ''}${year}.`
+        : item.marginSuspect
+          ? `Publicación de ${item.platform}. Margen elevado — referencia de mercado con pocos datos (${marketSrc}). Verificar precio en persona. ${kmLabel ? kmLabel + ' · ' : ''}${year}.`
+          : `Publicación de ${item.platform}. Precio al nivel del mercado (${marketSrc}). ${kmLabel ? kmLabel + ' · ' : ''}${year}. Verificar en persona.`;
 
       return {
         ...item,
@@ -314,9 +317,10 @@ const CATALOG_API = {
         ].filter(Boolean).slice(0, 3),
         negatives: [
           costs > 0 ? `Costos de entrada estimados: ${fmt.usd(costs)}` : 'Confirmar estado en persona',
-          km > 100000 ? 'Más de 100.000 km' : null,
+          item.marginSuspect ? 'Margen elevado — verificar precio real' : null,
+          item.kmEstimated ? 'Kilometraje estimado (no declarado)' : (km > 100000 ? 'Más de 100.000 km' : null),
           year < 2017 ? 'Vehículo con varios años' : null,
-        ].filter(Boolean).slice(0, 2),
+        ].filter(Boolean).slice(0, 3),
         visualScore, mechanicalScore,
         urgencyScore: item.urgent ? 90 : 50,
       };
@@ -1312,9 +1316,28 @@ const SearchScreen = ({ state, dispatch }) => {
         setMlResults(ML_API.transform(raw, market));
       }
     } catch (err) {
-      console.error('[ML search]', err);
-      setMlError(err.message);
-      setMlErrorCode(err.code || '');
+      if (err.code === 'NO_CREDENTIALS') {
+        // Fallback: buscar en catálogo local
+        setMlErrorCode('NO_CREDENTIALS');
+        try {
+          const params = new URLSearchParams({ q: query });
+          if (filters.minPrice) params.append('minPrice', filters.minPrice);
+          if (filters.maxPrice) params.append('maxPrice', filters.maxPrice);
+          const r = await fetch(`/api/catalog/search?${params}`);
+          const data = await r.json();
+          if (data.results?.length) {
+            setMlResults(CATALOG_API.transform(data.results));
+            setMlSource('catalog');
+          } else {
+            setMlError(`Sin resultados para "${query}" en el catálogo.`);
+          }
+        } catch {
+          setMlError(err.message);
+        }
+      } else {
+        setMlError(err.message);
+        setMlErrorCode(err.code || '');
+      }
     } finally {
       setMlLoading(false);
     }
@@ -1443,12 +1466,24 @@ const SearchScreen = ({ state, dispatch }) => {
             </button>
           </div>
 
-          <div className="flex items-center gap-2 mb-4 p-3 bg-yellow-500/8 border border-yellow-500/20 rounded-2xl">
-            <div className="w-6 h-6 rounded-full bg-yellow-400 flex items-center justify-center flex-shrink-0 text-[10px] font-black text-black">ML</div>
-            <div className="flex-1">
-              <p className="text-yellow-200 text-xs font-semibold">MercadoLibre Argentina · Autos y Camionetas</p>
-              <p className="text-emerald-400 text-[10px] mt-0.5">Datos reales en tiempo real</p>
+          <div className={`flex items-center gap-2 mb-4 p-3 border rounded-2xl ${mlSource === 'catalog' ? 'bg-blue-500/8 border-blue-500/20' : 'bg-yellow-500/8 border-yellow-500/20'}`}>
+            <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 text-[10px] font-black ${mlSource === 'catalog' ? 'bg-blue-400 text-white' : 'bg-yellow-400 text-black'}`}>
+              {mlSource === 'catalog' ? '🏢' : 'ML'}
             </div>
+            <div className="flex-1">
+              <p className={`text-xs font-semibold ${mlSource === 'catalog' ? 'text-blue-200' : 'text-yellow-200'}`}>
+                {mlSource === 'catalog' ? 'Buscando en catálogo local · Concesionarias MdP' : 'MercadoLibre Argentina · Autos y Camionetas'}
+              </p>
+              <p className={`text-[10px] mt-0.5 ${mlSource === 'catalog' ? 'text-slate-400' : 'text-emerald-400'}`}>
+                {mlSource === 'catalog' ? 'Conectá ML en Perfil para buscar en todo el país' : 'Datos reales en tiempo real'}
+              </p>
+            </div>
+            {mlSource === 'catalog' && (
+              <button onClick={() => dispatch({ type: 'SET_TAB', payload: 'perfil' })}
+                className="text-[10px] text-blue-400 font-semibold px-2 py-1 bg-blue-500/15 rounded-lg hover:bg-blue-500/25 transition-colors">
+                Conectar
+              </button>
+            )}
           </div>
 
           {mlLoading && (
@@ -1458,55 +1493,23 @@ const SearchScreen = ({ state, dispatch }) => {
           )}
 
           {mlError && !mlLoading && (
-            mlErrorCode === 'NO_CREDENTIALS' ? (
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                className="space-y-3">
-                <div className="p-4 bg-amber-500/10 border border-amber-500/25 rounded-2xl space-y-3">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-xl bg-yellow-400 flex items-center justify-center text-[11px] font-black text-black flex-shrink-0">ML</div>
-                    <div>
-                      <p className="text-amber-300 text-sm font-bold">Credenciales de MercadoLibre requeridas</p>
-                      <p className="text-slate-400 text-xs">Necesitás una app gratuita de desarrollador para buscar en tiempo real</p>
-                    </div>
-                  </div>
-                  <div className="p-3 bg-white/4 rounded-xl border border-white/8 space-y-2">
-                    <p className="text-slate-300 text-xs font-semibold">Cómo activarlo (es gratis, 2 minutos):</p>
-                    {[
-                      'Registrate en developers.mercadolibre.com.ar',
-                      'Creá una nueva aplicación',
-                      'Copiá tu App ID y Secret Key',
-                      'Pegálos en Perfil → Ajustes MercadoLibre',
-                    ].map((step, i) => (
-                      <div key={i} className="flex items-start gap-2">
-                        <span className="w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">{i+1}</span>
-                        <p className="text-slate-400 text-xs">{step}</p>
-                      </div>
-                    ))}
-                  </div>
-                  <GlowBtn onClick={() => dispatch({ type: 'SET_TAB', payload: 'perfil' })} className="w-full" size="sm">
-                    <span className="flex items-center gap-2 justify-center"><Settings size={13} /> Ir a Ajustes MercadoLibre</span>
-                  </GlowBtn>
+            <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl space-y-3">
+              <p className="text-red-400 text-sm font-semibold">
+                {mlError.startsWith('Sin resultados') ? '🔍 Sin resultados' : '⚠️ Error'}
+              </p>
+              <p className="text-slate-300 text-xs leading-relaxed">{mlError}</p>
+              {!mlError.startsWith('Sin resultados') && (
+                <div className="p-3 bg-white/4 rounded-xl border border-white/8 text-xs text-slate-400 space-y-1">
+                  <p className="font-semibold text-slate-300">¿El servidor API está corriendo?</p>
+                  <p>Asegurate de ejecutar <code className="text-blue-400 bg-blue-500/10 px-1 py-0.5 rounded">npm run dev</code> (no solo vite).</p>
+                  <p>Esto arranca tanto el frontend como el servidor API en el puerto 3010.</p>
                 </div>
-              </motion.div>
-            ) : (
-              <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl space-y-3">
-                <p className="text-red-400 text-sm font-semibold">
-                  {mlError.startsWith('Sin resultados') ? '🔍 Sin resultados' : '⚠️ Error'}
-                </p>
-                <p className="text-slate-300 text-xs leading-relaxed">{mlError}</p>
-                {!mlError.startsWith('Sin resultados') && (
-                  <div className="p-3 bg-white/4 rounded-xl border border-white/8 text-xs text-slate-400 space-y-1">
-                    <p className="font-semibold text-slate-300">¿El servidor API está corriendo?</p>
-                    <p>Asegurate de ejecutar <code className="text-blue-400 bg-blue-500/10 px-1 py-0.5 rounded">npm run dev</code> (no solo vite).</p>
-                    <p>Esto arranca tanto el frontend como el servidor API en el puerto 3010.</p>
-                  </div>
-                )}
-                <button onClick={() => searchML(filters.search || 'auto')}
-                  className="text-blue-400 text-xs font-semibold hover:text-blue-300 transition-colors">
-                  Reintentar →
-                </button>
-              </div>
-            )
+              )}
+              <button onClick={() => searchML(filters.search || 'auto')}
+                className="text-blue-400 text-xs font-semibold hover:text-blue-300 transition-colors">
+                Reintentar →
+              </button>
+            </div>
           )}
 
           {!mlLoading && !mlError && mlResults.length > 0 && (

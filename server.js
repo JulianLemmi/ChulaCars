@@ -106,6 +106,40 @@ app.get('/api/ml/search', async (req, res) => {
   }
 });
 
+// ── GET /api/catalog/search — búsqueda en catálogo local (no requiere ML) ────
+app.get('/api/catalog/search', (req, res) => {
+  if (!_catalogCache?.cars?.length) {
+    return res.status(503).json({ error: 'Catálogo no disponible aún', results: [] });
+  }
+  const { q = '', minPrice, maxPrice, minYear, maxYear, source } = req.query;
+  const qn = norm(q);
+
+  let results = _catalogCache.cars.filter(c => {
+    if (qn) {
+      const hay = norm(`${c.brand} ${c.model} ${c.version} ${c.year}`);
+      if (!hay.includes(qn)) return false;
+    }
+    if (minPrice && c.price < parseFloat(minPrice)) return false;
+    if (maxPrice && c.price > parseFloat(maxPrice)) return false;
+    if (minYear  && c.year  < parseInt(minYear))   return false;
+    if (maxYear  && c.year  > parseInt(maxYear))   return false;
+    if (source   && c.source !== source)            return false;
+    return true;
+  });
+
+  results = results
+    .sort((a, b) => b.overallScore - a.overallScore)
+    .slice(0, 48);
+
+  res.json({
+    results,
+    total: results.length,
+    source: 'catalog',
+    usdRate: _catalogCache.usdRate,
+    updatedAt: _catalogCache.updatedAt,
+  });
+});
+
 // ── POST /api/ml/credentials ──────────────────────────────────────────────────
 app.post('/api/ml/credentials', async (req, res) => {
   const { clientId, clientSecret } = req.body;
@@ -210,7 +244,45 @@ function norm(s) {
     .replace(/\s+/g, ' ');
 }
 
-// Construye índice interno desde el catálogo (fallback sin ML)
+// Bracket de año: agrupa de a 2 años para tolerar variaciones de modelo
+const yearBracket = y => Math.floor((y || 2020) / 2) * 2;
+
+// Construye índice cross-source: agrupa por brand|model|year_bracket para
+// evitar comparar un Amarok 2016 con uno 2024, y aplica IQR para outliers.
+function buildCrossSourceIndex(cars) {
+  const groups = {};
+  for (const c of cars) {
+    if (!c.brand || c.price <= 0) continue;
+    const key = `${norm(c.brand)}|${norm(c.model || '')}|${yearBracket(c.year)}`;
+    (groups[key] = groups[key] || []).push(c.price);
+  }
+  const idx = {};
+  for (const [key, prices] of Object.entries(groups)) {
+    prices.sort((a, b) => a - b);
+    const n = prices.length;
+    // IQR filter (requiere al menos 2; con 1 solo no hay referencia útil)
+    if (n < 2) continue;
+    const q1 = prices[Math.floor(n * 0.25)];
+    const q3 = prices[Math.floor(n * 0.75)];
+    const iqr = q3 - q1;
+    const filtered = iqr > 0
+      ? prices.filter(p => p >= q1 - 1.5 * iqr && p <= q3 + 1.5 * iqr)
+      : prices;
+    const fn = filtered.length;
+    idx[key] = {
+      avg:    Math.round(filtered.reduce((s, p) => s + p, 0) / fn),
+      median: filtered[Math.floor(fn / 2)],
+      p25:    filtered[Math.floor(fn * 0.25)],
+      p75:    filtered[Math.floor(fn * 0.75)],
+      count:  fn,
+      source: 'cross-source',
+    };
+  }
+  console.log(`[Market] Índice cross-source: ${Object.keys(idx).length} combos brand/model/año de ${cars.length} autos`);
+  return idx;
+}
+
+// Fallback plano sin año (para modelos con muy pocos listings)
 function buildInternalIndex(cars) {
   const groups = {};
   for (const c of cars) {
@@ -232,7 +304,6 @@ function buildInternalIndex(cars) {
       source: 'internal',
     };
   }
-  console.log(`[Market] Índice interno: ${Object.keys(idx).length} modelos de ${cars.length} autos`);
   return idx;
 }
 
@@ -295,14 +366,17 @@ async function getMarketIndex(cars) {
   if (_marketIndexP) return _marketIndexP;
 
   _marketIndexP = (async () => {
-    const mlIdx = await buildMLIndex(cars).catch(() => null);
+    // Cross-source (brand|model|year_bracket) → mejor que interno plano
+    const crossIdx    = buildCrossSourceIndex(cars);
+    // Interno plano (brand|model sin año) → fallback para modelos con pocos datos
     const internalIdx = buildInternalIndex(cars);
-    // Fusionar: ML tiene prioridad, interno como fallback por modelo
-    const merged = { ...internalIdx };
+    // ML API (requiere credenciales) → mayor precisión cuando está disponible
+    const mlIdx       = await buildMLIndex(cars).catch(() => null);
+
+    // Prioridad: ML > cross-source > internal
+    const merged = { ...internalIdx, ...crossIdx };
     if (mlIdx) {
-      for (const [k, v] of Object.entries(mlIdx)) {
-        merged[k] = v; // ML sobreescribe interno
-      }
+      for (const [k, v] of Object.entries(mlIdx)) merged[k] = v;
     }
     _marketIndex = merged;
     _marketIndexExpiry = Date.now() + (_mlCredentials.clientId ? 4 : 0.5) * 3_600_000;
@@ -314,51 +388,69 @@ async function getMarketIndex(cars) {
 
 // Enriquece cada auto con datos reales de mercado y ganancia neta
 function enrichWithMarket(cars, index) {
-  // Precio promedio global como último fallback
-  const allPrices = cars.filter(c => c.price > 0).map(c => c.price);
-  const globalAvg = allPrices.length
-    ? Math.round(allPrices.reduce((s, p) => s + p, 0) / allPrices.length * 1.05)
-    : 15000;
-
   return cars.map(car => {
-    const key = `${norm(car.brand)}|${norm(car.model || '')}`;
-    const brandKey = `${norm(car.brand)}|`;
-    const market = index[key]
-      || Object.entries(index).find(([k]) => k.startsWith(brandKey))?.[1]
+    const year = car.year || new Date().getFullYear() - 3;
+    const km   = car.km || 0;
+
+    // Lookup 1: brand|model|year_bracket (más específico)
+    const yb      = yearBracket(year);
+    const keyYr   = `${norm(car.brand)}|${norm(car.model || '')}|${yb}`;
+    // Lookup 2: brand|model sin año (fallback plano)
+    const keyFlat = `${norm(car.brand)}|${norm(car.model || '')}`;
+    // Lookup 3: solo marca (último recurso)
+    const keyBrand = `${norm(car.brand)}|`;
+
+    const market = index[keyYr]
+      || index[keyFlat]
+      || Object.entries(index).find(([k]) => k.startsWith(keyBrand))?.[1]
       || null;
 
-    const marketAvg = market?.median || globalAvg;
-    const marketCount = market?.count || 0;
-    const marketSource = market?.source || 'global';
+    // Sin referencia de mercado → no calculamos margen falso
+    const marketAvg    = market?.median || 0;
+    const marketCount  = market?.count  || 0;
+    const marketSource = market?.source || 'sin-datos';
 
-    const margin = marketAvg > car.price && car.price > 0
+    const margin = marketAvg > 0 && marketAvg > car.price && car.price > 0
       ? parseFloat(((marketAvg - car.price) / marketAvg * 100).toFixed(1))
       : 0;
 
-    const km          = car.km || 0;
-    const grossProfit = Math.max(0, marketAvg - car.price);
+    // Márgenes >40% con fuente cross-source son sospechosos (datos insuficientes)
+    const marginSuspect = margin > 40 && marketSource !== 'ml';
+
+    const grossProfit = marketAvg > 0 ? Math.max(0, marketAvg - car.price) : 0;
     const costs       = COST_TRANSFER + COST_DETAILING + costRepair(km);
     const netProfit   = Math.round(grossProfit - costs);
-    const roi         = car.price > 0 ? parseFloat(((netProfit / car.price) * 100).toFixed(1)) : 0;
+    const roi         = car.price > 0 && netProfit > 0
+      ? parseFloat(((netProfit / car.price) * 100).toFixed(1)) : 0;
 
-    // Investment score basado en ganancia neta real (no en margin bruto)
-    const investmentScore = netProfit > 4000 ? 5 : netProfit > 2000 ? 4 : netProfit > 800 ? 3 : netProfit > 0 ? 2 : 1;
+    // investmentScore recalibrado: márgenes reales AR son 5-20%
+    // netProfit en USD con costos reales ya incluidos
+    const investmentScore = marginSuspect ? 2
+      : netProfit > 3000 ? 5
+      : netProfit > 1500 ? 4
+      : netProfit > 500  ? 3
+      : netProfit > 0    ? 2 : 1;
 
-    // Overall score: 40% precio, 35% condición, 15% liquidez, 10% marca
-    const priceScore  = Math.min(100, 50 + margin * 2.5);
-    const year        = car.year || new Date().getFullYear() - 3;
-    const kmScore     = km < 30_000 ? 95 : km < 60_000 ? 85 : km < 100_000 ? 72 : km < 150_000 ? 58 : 40;
-    const yearScore   = year >= 2023 ? 95 : year >= 2020 ? 85 : year >= 2017 ? 72 : year >= 2014 ? 60 : 48;
-    const condScore   = Math.round((kmScore + yearScore) / 2);
-    const liquidity   = marketCount > 50 ? 90 : marketCount > 20 ? 75 : marketCount > 5 ? 60 : 50;
-    const brandBonus  = PRIORITY_BRANDS.some(p => norm(car.brand).includes(p)) ? 85 : 70;
-    const overallScore = Math.round(priceScore * 0.40 + condScore * 0.35 + liquidity * 0.15 + brandBonus * 0.10);
+    // overallScore: 35% precio, 35% condición, 15% liquidez, 15% marca+fuente
+    const priceScore = marketAvg > 0
+      ? Math.min(100, Math.max(30, 50 + margin * 2))
+      : 50; // sin datos de mercado → neutro
+    const kmScore   = km < 30_000 ? 95 : km < 60_000 ? 85 : km < 100_000 ? 72 : km < 150_000 ? 58 : 40;
+    const yearScore = year >= 2024 ? 97 : year >= 2022 ? 88 : year >= 2020 ? 78 : year >= 2017 ? 65 : year >= 2014 ? 52 : 40;
+    const condScore = Math.round((kmScore + yearScore) / 2);
+    // Liquidez basada en cantidad de referencias cruzadas reales (no catálogo)
+    const liquidity = marketCount >= 5 ? 80 : marketCount >= 3 ? 65 : 50;
+    const brandBonus = PRIORITY_BRANDS.some(p => norm(car.brand).includes(p)) ? 85 : 68;
+    const overallScore = Math.round(
+      priceScore * 0.35 + condScore * 0.35 + liquidity * 0.15 + brandBonus * 0.15
+    );
 
     return {
       ...car,
       marketAvg,
       marketCount,
       marketSource,
+      marginSuspect,
       margin,
       grossProfit,
       netProfit,
@@ -366,8 +458,8 @@ function enrichWithMarket(cars, index) {
       roi,
       investmentScore,
       overallScore: Math.min(99, Math.max(10, overallScore)),
-      risk: netProfit > 2000 ? 'low' : netProfit > 0 ? 'medium' : 'high',
-      speed: km < 60_000 && year >= 2019 ? 'fast' : km < 100_000 ? 'medium' : 'slow',
+      risk:  netProfit > 1500 ? 'low' : netProfit > 0 ? 'medium' : 'high',
+      speed: km < 60_000 && year >= 2020 ? 'fast' : km < 100_000 ? 'medium' : 'slow',
     };
   });
 }
@@ -585,11 +677,18 @@ function parseTiendaCarsPage(html, usdRate, idOffset = 0) {
       const isCVT    = /\bCVT\b/i.test(title);
       const isManual = /\b(?:MT|manual)\b/i.test(title) && !isCVT;
       const isDiesel = /\b(?:TD|TDI|diesel)\b/i.test(title);
+      // Estimar km si la URL indica 0km, o sino según año del vehículo
+      const isZeroKm = /\/0km\//i.test(url);
+      const kmEst = isZeroKm ? 0
+        : year >= 2024 ? 12000
+        : year >= 2022 ? 35000
+        : year >= 2020 ? 60000
+        : year >= 2018 ? 90000 : 130000;
       cars.push({
         id: `tiendacars-${idOffset + i}`,
         brand: parts[0] || 'Sin marca', model: parts[1] || '',
         version: parts.slice(2).join(' '),
-        year, km: 0,
+        year, km: kmEst, kmEstimated: !isZeroKm,
         price: priceUSD, currency: 'USD', priceARS,
         province: 'Buenos Aires', city: 'Mar del Plata',
         fuel: isDiesel ? 'Diesel' : 'Nafta',
